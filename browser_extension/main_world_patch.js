@@ -86,7 +86,40 @@
           };
         } catch(_) {}
 
-        // (Bypass logic removed: session-based ignore handled server-side)
+        // Inject X-ZT-Ignore-Token header if the user clicked Ignore on the toast.
+        // sessionStorage is shared between the content script (toast_inject.js) and this main world.
+        try {
+          if (sessionStorage.getItem('zt_ignore_pending') === '1') {
+            sessionStorage.removeItem('zt_ignore_pending');
+            const modInit = Object.assign({}, init || {});
+            const h = new Headers(modInit.headers || {});
+            h.set('X-ZT-Ignore-Token', '1');
+            modInit.headers = h;
+            const res = await _fetch.call(this, input, modInit);
+            // Handle response identical to the normal path below
+            try {
+              if (res && res.status === 403) {
+                const blocked = res.headers && res.headers.get && res.headers.get('X-ZT-Blocked');
+                if (blocked === '1') {
+                  try { const u = (typeof input === 'string') ? input : (input && input.url); if (window.__ZT_PENDING__) delete window.__ZT_PENDING__[u]; } catch(_) {}
+                  const reason = (res.headers.get && res.headers.get('X-ZT-Reason')) || 'Blocked by ZeroTrusted.ai';
+                  const mode = (res.headers.get && res.headers.get('X-ZT-Mode')) || '';
+                  const silent = (res.headers.get && res.headers.get('X-ZT-Silent')) === '1';
+                  const allowProceed = (res.headers.get && res.headers.get('X-ZT-Allow-Proceed')) === '1';
+                  const auth = (res.headers.get && res.headers.get('X-ZT-Auth')) === '1';
+                  const ignoreRem = (res.headers.get && res.headers.get('X-ZT-Ignore-Remaining')) || null;
+                  const masked = (res.headers.get && res.headers.get('X-ZT-PII-Masked')) || '';
+                  const url = (typeof input === 'string') ? input : (input && input.url);
+                  dispatchBlocked(reason, url, { mode, silent, allowProceed, auth, masked, ignoreRemaining: ignoreRem });
+                }
+              } else if (dispatchedLoading) {
+                try { window.dispatchEvent(new CustomEvent('ztproxy-clear-loading', { detail: { url: urlStr } })); } catch(_) {}
+                try { const u = (typeof input === 'string') ? input : (input && input.url); if (window.__ZT_PENDING__) delete window.__ZT_PENDING__[u]; } catch(_) {}
+              }
+            } catch(_) {}
+            return res;
+          }
+        } catch(_) {}
         const res = await _fetch.apply(this, arguments);
         try{
           if (res && res.status === 403) {
@@ -150,6 +183,37 @@
         });
         return send.apply(this, arguments);
       };
+    }
+  } catch(_) {}
+  // Patch WebSocket constructor to intercept ZT block signals injected by proxy.
+  // Needed because ChatGPT uses WebSocket (conduit protocol) instead of HTTP POST.
+  // We register a capture-phase listener at construction time (before page code adds its own),
+  // so stopImmediatePropagation() prevents ChatGPT from seeing the synthetic block frame.
+  try {
+    const _WS = window.WebSocket;
+    if (typeof _WS === 'function') {
+      function ZTWebSocket(url, protocols) {
+        const ws = (arguments.length >= 2) ? new _WS(url, protocols) : new _WS(url);
+        ws.addEventListener('message', function(evt) {
+          try {
+            if (typeof evt.data !== 'string') return;
+            const d = JSON.parse(evt.data);
+            if (d && d.zt_blocked === true) {
+              evt.stopImmediatePropagation();
+              const reasonText = d.reason === 'pii_detected'
+                ? 'PII detected — message blocked by ZeroTrusted.ai'
+                : 'Blocked by ZeroTrusted.ai';
+              dispatchBlocked(reasonText, location.href, { mode: 'post-chat-pii' });
+              try { if (DEBUG) console.info('[ZTProxy][main_world_patch] WS block signal → toast dispatched', d.reason); } catch(_) {}
+            }
+          } catch(_) {}
+        }, true); // capture phase — fires before page's own message handlers
+        return ws;
+      }
+      ZTWebSocket.prototype = _WS.prototype;
+      Object.setPrototypeOf(ZTWebSocket, _WS); // inherit CONNECTING/OPEN/CLOSING/CLOSED statics
+      window.WebSocket = ZTWebSocket;
+      try { if (DEBUG) console.info('[ZTProxy][main_world_patch] WebSocket patched for WS block signals'); } catch(_) {}
     }
   } catch(_) {}
   // End patch

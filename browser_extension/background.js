@@ -1379,7 +1379,11 @@ async function updateSessionHeaderRule() {
               'chat.mistral.ai',
               'console.anthropic.com',
               'beta.character.ai',
-              'character.ai'
+              'character.ai',
+              'copilot.microsoft.com',
+              'm365.cloud.microsoft',
+              'copilot.cloud.microsoft',
+              'substrate.office.com'
             ],
             resourceTypes: ['main_frame', 'sub_frame', 'xmlhttprequest', 'websocket', 'other']
           }
@@ -1387,7 +1391,10 @@ async function updateSessionHeaderRule() {
         console.log('ZTProxy: Adding X-ZT-Session header rule for AI domains with session:', sessionId.substring(0, 10) + '...');
       }
       
-      // Rule 2: X-ZT-Ignore-Token header ONLY on conversation endpoints
+      // Rule 2: X-ZT-Ignore-Token header on all AI domain requests
+      // No regexFilter — Chrome silently rejects complex regexes causing the rule to never fire.
+      // The proxy already selectively enforces PII only on conversation paths,
+      // so sending the header on all requests to these domains is safe.
       if (ignoreCount > 0) {
         console.log('⚠️ [ZTProxy Background] ADDING IGNORE TOKEN RULE with count:', ignoreCount, '- This will BYPASS proxy checks!');
         const ignoreRule = {
@@ -1402,10 +1409,18 @@ async function updateSessionHeaderRule() {
             }]
           },
           condition: {
-            // Match conversation endpoints - including ChatGPT, OpenAI API, Claude, etc.
-            // Matches: /conversation, /conversations, /backend-api/conversation, /backend-api/f/conversation, /v1/chat/completions
-            regexFilter: '.*/(backend-api/(f/)?)?conversation(s)?.*|.*/v\\d+/(chat|completions).*',
-            resourceTypes: ['xmlhttprequest']
+            requestDomains: [
+              'chatgpt.com', 'openai.com', 'api.openai.com',
+              'claude.ai', 'api.anthropic.com',
+              'gemini.google.com', 'bard.google.com', 'ai.google.dev',
+              'api.perplexity.ai', 'perplexity.ai',
+              'you.com', 'api.you.com',
+              'poe.com', 'mistral.ai', 'chat.mistral.ai',
+              'console.anthropic.com', 'beta.character.ai', 'character.ai',
+              'copilot.microsoft.com', 'm365.cloud.microsoft',
+              'copilot.cloud.microsoft', 'substrate.office.com'
+            ],
+            resourceTypes: ['xmlhttprequest', 'other']
           }
         };
         rulesToAdd.push(ignoreRule);
@@ -1421,37 +1436,49 @@ async function updateSessionHeaderRule() {
         console.log('✅ [ZTProxy Background] No ignore token rule added - count is 0 (normal blocking will occur)');
       }
 
-      // Add rules if we have any
-      if (rulesToAdd.length > 0) {
-        console.log('🔧 [DEBUG] About to add rules:', JSON.stringify(rulesToAdd, null, 2));
-        await chrome.declarativeNetRequest.updateDynamicRules({
-          addRules: rulesToAdd
-        });
-        console.log('ZTProxy: Header injection rules updated. Session:', !!sessionId, 'Auth token:', !!(ssoAuth && ssoAuth.authToken), 'Ignore tokens:', ignoreCount);
-        
-        // Verify rules were added with FULL details
-        const updatedRules = await chrome.declarativeNetRequest.getDynamicRules();
-        console.log('ZTProxy: Active rules after update:', updatedRules);
-        console.log('🔍 [DEBUG] Full rule details:', JSON.stringify(updatedRules, null, 2));
-        
-        // Test regex pattern manually to verify it should match
-        if (ignoreCount > 0) {
-          const testUrls = [
-            'https://chatgpt.com/backend-api/f/conversation',
-            'https://chatgpt.com/backend-api/conversation',
-            'https://api.openai.com/v1/chat/completions'
-          ];
-          const ignoreRule = rulesToAdd.find(r => r.id === 2);
-          if (ignoreRule && ignoreRule.condition.regexFilter) {
-            console.log('🧪 [DEBUG] Testing regex:', ignoreRule.condition.regexFilter);
-            const testRegex = new RegExp(ignoreRule.condition.regexFilter);
-            testUrls.forEach(url => {
-              console.log(`  ${url} → ${testRegex.test(url) ? '✅ MATCHES' : '❌ NO MATCH'}`);
-            });
-          }
-        }
+      // CRITICAL: Add Rule 1 (session) and Rule 2 (ignore token) in SEPARATE calls.
+      // Chrome's addRules is atomic — if any rule in the array is invalid, NONE get added.
+      // A bad ignore-token regex would therefore also wipe out the session rule, causing 401
+      // on every request.  Separate calls mean Rule 1 always succeeds independently.
+
+      // --- Rule 1: session header (must always succeed) ---
+      const sessionRule = rulesToAdd.find(r => r.id === 1);
+      if (sessionRule) {
+        await chrome.declarativeNetRequest.updateDynamicRules({ addRules: [sessionRule] });
+        console.log('ZTProxy: Session rule added. Session:', !!sessionId, 'Auth:', !!(ssoAuth && ssoAuth.authToken));
       } else {
-        console.log('ZTProxy: No sessionId or ignore tokens, skipping rule creation');
+        console.log('ZTProxy: No sessionId — session rule skipped');
+      }
+
+      // --- Rule 2: ignore token (separate call so failure never removes Rule 1) ---
+      const ignoreRuleToAdd = rulesToAdd.find(r => r.id === 2);
+      if (ignoreRuleToAdd) {
+        try {
+          await chrome.declarativeNetRequest.updateDynamicRules({ addRules: [ignoreRuleToAdd] });
+          console.log('ZTProxy: Ignore token rule added. Count:', ignoreCount);
+          // Debug: verify active rules
+          const updatedRules = await chrome.declarativeNetRequest.getDynamicRules();
+          console.log('🔍 [DEBUG] Active rules after update:', JSON.stringify(updatedRules, null, 2));
+          // Debug: test regex
+          if (ignoreRuleToAdd.condition.regexFilter) {
+            const testUrls = [
+              'https://chatgpt.com/backend-api/f/conversation',
+              'https://api.openai.com/v1/chat/completions',
+              'https://api.anthropic.com/v1/messages',
+              'https://claude.ai/api/organizations/x/chat_conversations/y/completion',
+              'https://claude.ai/api/append_message',
+              'https://gemini.google.com/_/bardchatui/data/batchexecute',
+              'https://gemini.google.com/_/gemini/data/batchexecute',
+            ];
+            const testRegex = new RegExp(ignoreRuleToAdd.condition.regexFilter);
+            console.log('🧪 [DEBUG] Testing ignore regex:', ignoreRuleToAdd.condition.regexFilter);
+            testUrls.forEach(url => console.log(`  ${url} → ${testRegex.test(url) ? '✅' : '❌'}`));
+          }
+        } catch (e) {
+          console.warn('ZTProxy: Ignore token rule rejected by Chrome (regex too complex?):', e);
+          // Rule 1 (session) is already active — sessions and blocking still work normally.
+          // Only the one-click "proceed anyway" bypass will be unavailable until next restart.
+        }
       }
   } catch (e) {
     console.warn('ZTProxy: Could not update session header rule', e);
@@ -1479,6 +1506,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle ignore token updates from content script
   if (message && message.type === 'UPDATE_IGNORE_TOKEN') {
     console.log('[ZTProxy Background] ✅ Received UPDATE_IGNORE_TOKEN message with count:', message.count);
+
+    // Inject a MAIN world fetch patch that adds X-ZT-Ignore-Token to the next chat POST.
+    // Only intercepts POST requests matching conversation endpoint patterns so unrelated
+    // background fetches (telemetry, assets) do not consume the token prematurely.
+    // Cleans itself up after 30 s if no matching request fires.
+    if (sender && sender.tab && sender.tab.id) {
+      chrome.scripting.executeScript({
+        target: { tabId: sender.tab.id, allFrames: true },
+        world: 'MAIN',
+        func: () => {
+          if (window.__ZT_IGNORE_ACTIVE__) return;
+          window.__ZT_IGNORE_ACTIVE__ = true;
+          const _f = window.fetch;
+          const _cleanup = () => { if (window.fetch !== _f) window.fetch = _f; window.__ZT_IGNORE_ACTIVE__ = false; };
+          const _timer = setTimeout(_cleanup, 30000);
+          window.fetch = async function(input, init) {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            const method = ((init && init.method) || 'GET').toUpperCase();
+            // Only consume token for POST requests to conversation/chat endpoints
+            const isChat = method === 'POST' && /(conversation|messages|completions|generate|append|\/v1\/)/i.test(url);
+            if (!isChat) return _f.apply(this, arguments);
+            clearTimeout(_timer);
+            _cleanup();
+            const m = Object.assign({}, init || {});
+            const h = new Headers(m.headers || {});
+            h.set('X-ZT-Ignore-Token', '1');
+            m.headers = h;
+            return _f.apply(this, [input, m]);
+          };
+        }
+      }).catch(e => console.warn('[ZTProxy Background] Could not inject MAIN world ignore patch:', e));
+    }
+
     // Store count in chrome.storage.local
     chrome.storage.local.set({ zt_ignore_token_count: message.count }, () => {
       if (chrome.runtime.lastError) {
@@ -1487,11 +1547,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       console.log('[ZTProxy Background] ✅ Stored ignore token count:', message.count);
-      
+
       // Verify it was actually stored
       chrome.storage.local.get(['zt_ignore_token_count'], (verifyResult) => {
         console.log('[ZTProxy Background] 🔍 Verification: storage now contains:', verifyResult.zt_ignore_token_count);
-        
+
         // Update header injection rules
         updateSessionHeaderRule().then(() => {
           console.log('[ZTProxy Background] ✅ Updated header rules with ignore token');

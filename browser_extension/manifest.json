@@ -30,10 +30,17 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-  "js": ["main_world_patch.js", "toast_inject.js"],
-  "run_at": "document_start",
-  "all_frames": true,
-  "match_about_blank": true
+      "js": ["main_world_patch.js", "toast_inject.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["ignore_injector.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
     }
   ],
   "action": {
