@@ -216,7 +216,7 @@
     console.info('[ZTProxy] Creating toast card - opts.auth:', opts?.auth, 'isAuth:', isAuth, 'showIgnore:', showIgnore, 'showConnect:', !isAuth, 'mode:', mode, 'enforcementType:', enforcementType);
     
     const isFileUploadBlock = mode === 'file-upload-sanitization' || (reason && reason.includes('Unsanitized file upload'));
-    const sanitizeLink = isFileUploadBlock ? '<div style="margin-top:8px;font-size:13px"><a href="https://dev.zerotrusted.ai/file-sanitization" target="_blank" rel="noopener noreferrer" style="color:#4a9eff;text-decoration:underline">Click here to sanitize your files.</a></div>' : '';
+    const sanitizeLink = isFileUploadBlock ? '<div style="margin-top:8px;font-size:13px"><a href="https://zerotrusted.ai/file-sanitization" target="_blank" rel="noopener noreferrer" style="color:#4a9eff;text-decoration:underline">Click here to sanitize your files.</a></div>' : '';
     
     // Check if this is a blacklist block (all_requests enforcement)
     const isBlocklistBlock = mode === 'blocklist' && enforcementType === 'all_requests';
@@ -265,33 +265,18 @@
     // Wire buttons
     const ignoreBtn = card.querySelector('#zt-toast-ignore');
     if (ignoreBtn) ignoreBtn.onclick = async () => {
-      // Notify background script to increment ignore token
-      // Storage is now handled entirely in background service worker (chrome.storage.local)
+      // Set flag in sessionStorage — shared with ignore_injector.js (MAIN world),
+      // which reads it on the next matching chat POST and injects X-ZT-Ignore-Token: 1.
       try {
-        // First, get current count from background
-        chrome.runtime.sendMessage({ type: 'GET_IGNORE_COUNT' }, async (response) => {
-          const currentCount = (response && response.count) || 0;
-          const newCount = currentCount + 1;
-          
-          console.log('[ZTProxy Toast] IGNORE button clicked - Adding ignore token. Count:', currentCount, '→', newCount);
-          
-          // Send update message
-          chrome.runtime.sendMessage({
-            type: 'UPDATE_IGNORE_TOKEN',
-            count: newCount
-          }, (updateResponse) => {
-            if (chrome.runtime.lastError) {
-              console.error('[ZTProxy Content] Failed to update token:', chrome.runtime.lastError.message);
-            } else if (updateResponse && updateResponse.success) {
-              console.log('[ZTProxy Content] Token updated successfully. New count:', newCount);
-            } else {
-              console.error('[ZTProxy Content] Token update failed:', updateResponse);
-            }
-          });
-        });
+        sessionStorage.setItem('zt_ignore_pending', '1');
+        console.log('[ZTProxy Toast] IGNORE button clicked - zt_ignore_pending set');
       } catch (e) {
-        console.error('[ZTProxy Content] Failed to increment ignore token:', e);
+        console.error('[ZTProxy Content] Failed to set ignore flag:', e);
       }
+      // Belt-and-suspenders: update background DNR rule too
+      try {
+        chrome.runtime.sendMessage({ type: 'UPDATE_IGNORE_TOKEN', count: 1 });
+      } catch (e) { /* non-critical */ }
       
       // Close toast immediately
       try { card.remove(); } catch(_) {}
@@ -443,7 +428,7 @@
             // Check if this is a file upload sanitization block
             const isFileUploadBlock = detail.mode === 'file-upload-sanitization' || (detail.reason && detail.reason.includes('Unsanitized file upload'));
             const reasonText = detail.reason || 'Blocked by ZeroTrusted.ai';
-            const sanitizeLink = isFileUploadBlock ? '<div style="margin-top:8px;font-size:13px"><a href="https://dev.zerotrusted.ai/file-sanitization" target="_blank" rel="noopener noreferrer" style="color:#4a9eff;text-decoration:underline">Click here to sanitize your files.</a></div>' : '';
+            const sanitizeLink = isFileUploadBlock ? '<div style="margin-top:8px;font-size:13px"><a href="https://zerotrusted.ai/file-sanitization" target="_blank" rel="noopener noreferrer" style="color:#4a9eff;text-decoration:underline">Click here to sanitize your files.</a></div>' : '';
             
             loadingCard.innerHTML = `<div class="row"><img src="https://identity.zerotrusted.ai/img/logo-with-tagline-white.png" alt="ZT" style="height:22px"> <b>Request Blocked</b></div>
               <div class="zt-reason" style="margin-top:6px;opacity:.9">${reasonText}</div>${sanitizeLink}${maskedHtml}
@@ -457,6 +442,7 @@
             // Re-wire buttons
             const ignoreBtn = loadingCard.querySelector('#zt-toast-ignore');
             if (ignoreBtn) ignoreBtn.onclick = async () => {
+              try { sessionStorage.setItem('zt_ignore_pending', '1'); } catch(_) {}
               const proxyBase = await getProxyBase();
               try { 
                 const response = await fetch(proxyBase + '/ignore-start', { method: 'POST', credentials: 'include' });
