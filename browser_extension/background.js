@@ -51,6 +51,24 @@ let health = {
 // Routing domains cache (populated from /routing endpoint)
 let routedDomains = new Set();
 
+// UI to Backend domain mapping
+// When a UI domain is blocked, its backend domain inherits the same filter type
+const UI_TO_BACKEND_DOMAIN_MAP = {
+  'm365.cloud.microsoft': 'substrate.office.com',
+  'copilot.microsoft.com': 'substrate.office.com',
+  'copilot.cloud.microsoft': 'substrate.office.com',
+  // Add more mappings here as needed
+};
+
+// Reverse mapping: backend domain → array of UI domains
+const BACKEND_TO_UI_DOMAIN_MAP = {};
+for (const [uiDomain, backendDomain] of Object.entries(UI_TO_BACKEND_DOMAIN_MAP)) {
+  if (!BACKEND_TO_UI_DOMAIN_MAP[backendDomain]) {
+    BACKEND_TO_UI_DOMAIN_MAP[backendDomain] = [];
+  }
+  BACKEND_TO_UI_DOMAIN_MAP[backendDomain].push(uiDomain);
+}
+
 // Per-domain blocklist with filtertype
 // Example: { 'openai.com': { filtertype: 'post-only' }, 'gemini.google.com': { filtertype: 'all-requests' } }
 let domainBlocklist = {};
@@ -86,10 +104,15 @@ function shouldBlockRequest(details) {
     const url = new URL(details.url);
     const hostname = url.hostname;
     console.log('[ZTProxy][DEBUG] shouldBlockRequest: url', url.href, 'hostname', hostname);
+    
     // Find matching domain in blocklist (exact or parent)
     let matchedDomain = null;
+    let filtertype = null;
+    
+    // First, check if this domain is directly in the blocklist
     if (domainBlocklist[hostname]) {
       matchedDomain = hostname;
+      filtertype = domainBlocklist[matchedDomain].filtertype || 'post-only';
     } else {
       // Check parent domains
       const parts = hostname.split('.');
@@ -97,15 +120,31 @@ function shouldBlockRequest(details) {
         const parent = parts.slice(i).join('.');
         if (domainBlocklist[parent]) {
           matchedDomain = parent;
+          filtertype = domainBlocklist[matchedDomain].filtertype || 'post-only';
           break;
         }
       }
     }
+    
+    // If not found directly, check if this is a backend domain for a blocked UI domain
+    if (!matchedDomain && BACKEND_TO_UI_DOMAIN_MAP[hostname]) {
+      const uiDomains = BACKEND_TO_UI_DOMAIN_MAP[hostname];
+      console.log('[ZTProxy][DEBUG] Checking backend domain:', hostname, 'for UI domains:', uiDomains);
+      
+      for (const uiDomain of uiDomains) {
+        if (domainBlocklist[uiDomain]) {
+          matchedDomain = uiDomain;
+          filtertype = domainBlocklist[uiDomain].filtertype || 'post-only';
+          console.log('[ZTProxy][DEBUG] Backend domain matched! Using filtertype from UI domain:', uiDomain, 'filtertype:', filtertype);
+          break;
+        }
+      }
+    }
+    
     if (!matchedDomain) {
       console.log('[ZTProxy][DEBUG] shouldBlockRequest: no matchedDomain for', hostname);
       return false;
     }
-    const filtertype = domainBlocklist[matchedDomain].filtertype || 'post-only';
 
     // Special handling for Gemini prompt requests
     if (hostname.endsWith('gemini.google.com')) {
