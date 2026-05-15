@@ -1296,16 +1296,20 @@ async function updateSessionHeaderRule() {
   }
 
   try {
-    // CRITICAL FIX: Read session ID from storage to ensure we have the latest value
-    // The global sessionId variable may be stale or null after extension reload
+    // CRITICAL FIX: Read session ID and auth data from storage to ensure we have the latest values
+    // The global sessionId and ssoAuth variables may be stale or null after extension reload
     try {
-      const result = await chrome.storage.local.get(['ztSessionId']);
+      const result = await chrome.storage.local.get(['ztSessionId', 'ztAuth']);
       if (result.ztSessionId) {
         sessionId = result.ztSessionId;
         console.log('🔄 [ZTProxy] Synced session ID from storage:', sessionId.substring(0, 10) + '...');
       }
+      if (result.ztAuth) {
+        ssoAuth = result.ztAuth;
+        console.log('🔄 [ZTProxy] Synced auth data from storage:', { email: ssoAuth.email ? '***' : null, hasToken: !!ssoAuth.authToken });
+      }
     } catch (e) {
-      console.warn('ZTProxy: Could not read session ID from storage:', e);
+      console.warn('ZTProxy: Could not read session ID or auth from storage:', e);
     }
     
     // Remove existing rules
