@@ -61,3 +61,11 @@ The ZTProxy installer will automatically install this Chrome extension when you 
 
 ## Need Help?
 Check the ZTProxy logs for detailed information about intercepted requests.
+
+## Custom identity (login) server (v1.0.5)
+
+`ZTProxy_Install_Cert.exe` asks for the identity URL (e.g. `identity.yourdomain.ai`). Press Enter to keep the default `https://identity.zerotrusted.ai`.
+
+For silent/admin installs, either run `ZTProxy_Install_Cert.exe --identity-url identity.yourdomain.ai` or place `install_config.json` (`{"identity_url": "identity.yourdomain.ai"}`) next to the exe.
+
+A non-default choice is saved as `config.json` in `%LOCALAPPDATA%\ZTProxy\browser_extension`. Priority in the extension: `config.json` > proxy `/config` `identity_url` > default.

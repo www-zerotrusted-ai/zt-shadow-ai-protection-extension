@@ -4,6 +4,38 @@
 // Will be populated on startup by querying proxy's /config endpoint
 let PROXY_EDITION = 'unknown'; // 'standalone' or 'enterprise'
 let IS_STANDALONE = false;
+// Identity service base URL: local config.json (installer) > proxy /config identity_url > production default
+const DEFAULT_IDENTITY_BASE = 'https://identity.zerotrusted.ai';
+let IDENTITY_BASE = DEFAULT_IDENTITY_BASE;
+let IDENTITY_FROM_LOCAL_CONFIG = false;
+
+// Normalize user/installer supplied identity URL to https://host[:port]; returns null if invalid
+function normalizeIdentityUrl(value) {
+  try {
+    let v = String(value || '').trim();
+    if (!v) return null;
+    if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
+    const u = new URL(v);
+    if (!u.hostname) return null;
+    return `${u.protocol}//${u.host}`;
+  } catch (_) { return null; }
+}
+
+// Optional config.json written by the installer next to the extension files: {"identity_url": "..."}
+async function loadLocalConfig() {
+  try {
+    const resp = await fetch(chrome.runtime.getURL('config.json'));
+    if (!resp.ok) return;
+    const cfg = await resp.json();
+    const base = normalizeIdentityUrl(cfg && cfg.identity_url);
+    if (base) {
+      IDENTITY_BASE = base;
+      IDENTITY_FROM_LOCAL_CONFIG = true;
+      console.log(`[ZTProxy] Identity base from local config: ${IDENTITY_BASE}`);
+    }
+  } catch (_) { /* no local config: keep defaults */ }
+}
+loadLocalConfig();
 let IS_ENTERPRISE = false;
 
 // Browser detection and compatibility
@@ -703,6 +735,11 @@ async function detectProxyEdition() {
     if (response.ok) {
       const config = await response.json();
       const edition = config.edition || 'enterprise'; // Default to enterprise if not specified
+      const proxyIdentity = normalizeIdentityUrl(config.identity_url);
+      if (proxyIdentity && !IDENTITY_FROM_LOCAL_CONFIG) {
+        IDENTITY_BASE = proxyIdentity;
+        console.log(`[ZTProxy] Identity base from proxy config: ${IDENTITY_BASE}`);
+      }
       PROXY_EDITION = edition.toLowerCase();
       IS_STANDALONE = (PROXY_EDITION === 'standalone');
       IS_ENTERPRISE = (PROXY_EDITION === 'enterprise');
@@ -1956,7 +1993,7 @@ async function startSsoLoginFlow(){
     return { ok: false, error: 'SSO authentication not available in standalone mode' };
   }
   
-  const APP_BASE = 'https://identity.zerotrusted.ai';
+  const APP_BASE = IDENTITY_BASE;
   const redirectUri = chrome.identity.getRedirectURL('auth-complete.html');
   const loginUrl = `${APP_BASE}/External/ExtenstionAzureLogin?returnUrl=${encodeURIComponent(redirectUri)}`;
   
@@ -2163,7 +2200,7 @@ async function performEmailLogin(email, password) {
   
   try {
     // Call ZTA identity API
-    const LOGIN_API = 'https://identity.zerotrusted.ai/external/ztalogin';
+    const LOGIN_API = `${IDENTITY_BASE}/external/ztalogin`;
     const response = await fetch(LOGIN_API, {
       method: 'POST',
       headers: {
@@ -2284,7 +2321,7 @@ async function performEmailLogin(email, password) {
 }
 
 async function performCodeExchange(code){
-  const APP_BASE = 'https://identity.zerotrusted.ai';
+  const APP_BASE = IDENTITY_BASE;
   const resp = await fetch(`${APP_BASE}/api/ext/exchange`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ code }) });
   if(!resp.ok) throw new Error(`exchange_failed_${resp.status}`);
   const data = await resp.json();
