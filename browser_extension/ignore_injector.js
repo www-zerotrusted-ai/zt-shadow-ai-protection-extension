@@ -8,33 +8,13 @@
 
   const CHAT_RE = /(conversation|messages|completions|generate|append|\/v1\/)/i;
 
-  // The proxy's block page is a full HTML document; chat apps print the raw body as an error message.
-  // For ZT-blocked chat responses, swap the HTML body for a short JSON message (same status/headers).
-  // The block modal is driven separately (background webRequest), so it is unaffected.
-  function cleanBlockedResponse(res) {
-    try {
-      if (!res || res.status !== 403) return res;
-      const ct = (res.headers.get('content-type') || '').toLowerCase();
-      if (res.headers.get('X-ZT-Blocked') !== '1') return res;
-      if (ct.indexOf('text/html') === -1) return res;
-      const reason = res.headers.get('X-ZT-Reason') || 'Blocked by ZeroTrusted.ai';
-      const headers = new Headers(res.headers);
-      headers.set('content-type', 'application/json');
-      headers.delete('content-length');
-      headers.delete('content-encoding');
-      return new Response(JSON.stringify({ detail: reason, zt_blocked: true }), { status: res.status, statusText: res.statusText, headers });
-    } catch(_) { return res; }
-  }
-
   // --- Patch fetch (ChatGPT, Claude, etc.) ---
   const _f = window.fetch;
   window.fetch = async function(input, init) {
-    let isChat = false;
-    let args = arguments;
     try {
       const url = typeof input === 'string' ? input : (input && input.url) || '';
       const method = ((init && init.method) || 'GET').toUpperCase();
-      isChat = method === 'POST' && CHAT_RE.test(url);
+      const isChat = method === 'POST' && CHAT_RE.test(url);
       const pending = sessionStorage.getItem('zt_ignore_pending');
       if (isChat) console.info('[ZTProxy][ignore_injector] fetch chat POST', url, 'pending=', pending);
       if (isChat && pending === '1') {
@@ -44,11 +24,10 @@
         h.set('X-ZT-Ignore-Token', '1');
         m.headers = h;
         console.info('[ZTProxy][ignore_injector] ✅ X-ZT-Ignore-Token injected via fetch');
-        args = [input, m];
+        return _f.apply(this, [input, m]);
       }
     } catch(e) {}
-    const res = await _f.apply(this, args);
-    return isChat ? cleanBlockedResponse(res) : res;
+    return _f.apply(this, arguments);
   };
 
   // --- Patch XHR (Gemini uses goog.net.XhrIo / XMLHttpRequest, not fetch) ---
