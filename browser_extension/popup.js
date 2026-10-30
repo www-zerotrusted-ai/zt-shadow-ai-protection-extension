@@ -1,6 +1,11 @@
 // Popup script for ZTProxy extension
 // (Restored from browser_extension_previous)
 document.addEventListener('DOMContentLoaded', function () {
+  // Show the real extension version in the footer
+  try {
+    const verEl = document.getElementById('ztVersion');
+    if (verEl) verEl.textContent = 'v' + chrome.runtime.getManifest().version;
+  } catch (_) {}
   // Show install warning if just installed (simple heuristic: first popup open)
   const installWarning = document.getElementById('installWarning');
   const restartBrowserBtn = document.getElementById('restartBrowserBtn');

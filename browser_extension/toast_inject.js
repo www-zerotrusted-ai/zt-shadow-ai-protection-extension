@@ -589,3 +589,42 @@
     }, false);
   } catch(_) {}
 })();
+
+// Display-only cleanup: ChatGPT prints the proxy's HTML block page as raw text in the chat error.
+// Rewrite that text node to a short message. Network responses are NOT touched, so Ignore/Retry are unaffected.
+(function(){
+  try {
+    if (window.top !== window) return;
+    if (!/(^|\.)chatgpt\.com$/i.test(location.hostname)) return;
+    const SHORT = 'Request Blocked by ZT-Proxy';
+    function cleanText(node){
+      try {
+        const v = node.nodeValue;
+        if (!v || v.length < 200 || v.toLowerCase().indexOf('<!doctype html') === -1 || v.indexOf('Request Blocked') === -1) return;
+        const m = v.match(/PII threshold met \(\d+ findings?\)/i);
+        node.nodeValue = m ? `${SHORT}: ${m[0]}` : SHORT;
+      } catch(_) {}
+    }
+    function scan(root){
+      try {
+        if (!root) return;
+        if (root.nodeType === 3) { cleanText(root); return; }
+        if (root.nodeType !== 1) return;
+        const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        let n; while ((n = w.nextNode())) cleanText(n);
+      } catch(_) {}
+    }
+    let scheduled = false; const pending = new Set();
+    function flush(){ scheduled = false; const items = Array.from(pending); pending.clear(); items.forEach(scan); }
+    const start = () => {
+      new MutationObserver((muts) => {
+        for (const mu of muts) {
+          if (mu.type === 'characterData') pending.add(mu.target);
+          else mu.addedNodes && mu.addedNodes.forEach(n => pending.add(n));
+        }
+        if (!scheduled && pending.size) { scheduled = true; requestAnimationFrame(flush); }
+      }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    };
+    start();
+  } catch(_) {}
+})();
